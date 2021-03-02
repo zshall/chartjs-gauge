@@ -11,6 +11,8 @@ Chart.defaults._set('gauge', {
     lengthPercentage: 80,
     // The color of the needle
     color: 'rgba(0, 0, 0, 1)',
+    // Stop needle from going past max capacity and rotating back around
+    capAtMaxCapacity: false
   },
   valueLabel: {
     // fontSize: undefined
@@ -18,6 +20,23 @@ Chart.defaults._set('gauge', {
     formatter: null,
     color: 'rgba(255, 255, 255, 1)',
     backgroundColor: 'rgba(0, 0, 0, 1)',
+    borderRadius: 5,
+    padding: {
+      top: 5,
+      right: 5,
+      bottom: 5,
+      left: 5,
+    },
+    bottomMarginPercentage: 5,
+  },
+  valueDescriptionLabel: {
+    display: false,
+    formatter: null,
+    useDatasetColor: false,
+    color: 'rgba(255, 255, 255, 1)',
+    backgroundColor: 'rgba(0, 0, 0, 1)',
+    strokeWidth: 0,
+    strokeColor: 'black',
     borderRadius: 5,
     padding: {
       top: 5,
@@ -94,6 +113,7 @@ const GaugeController = Chart.controllers.doughnut.extend({
       widthPercentage,
       lengthPercentage,
       color,
+      capAtMaxCapacity
     } = config.options.needle;
 
     const width = this.getWidth(this.chart);
@@ -101,13 +121,18 @@ const GaugeController = Chart.controllers.doughnut.extend({
     const needleWidth = (widthPercentage / 100) * width;
     const needleLength = (lengthPercentage / 100) * (outerRadius - innerRadius) + innerRadius;
 
+    const max = this.getMaxValue(dataset.data);
+    const value = capAtMaxCapacity && max < dataset.value ? max : dataset.value;
+    const previousMax = previous.maxValue;
+    const previousVal = capAtMaxCapacity && previousMax < previous.value ? previousMax : previous.value;
+
     // center
     const { dx, dy } = this.getTranslation(this.chart);
 
     // interpolate
-    const origin = this.getAngle({ chart: this.chart, value: previous.value, maxValue: previous.maxValue });
+    const origin = this.getAngle({ chart: this.chart, value: previousVal, maxValue: previous.maxValue });
     // TODO maxValue is in current.maxValue also
-    const target = this.getAngle({ chart: this.chart, value: dataset.value, maxValue: this.getMaxValue(dataset.data) });
+    const target = this.getAngle({ chart: this.chart, value, maxValue: this.getMaxValue(dataset.data) });
     const angle = origin + (target - origin) * ease;
 
     // draw
@@ -144,6 +169,8 @@ const GaugeController = Chart.controllers.doughnut.extend({
       fontSize,
       color,
       backgroundColor,
+      strokeWidth,
+      strokeColor,
       borderRadius,
       padding,
       bottomMarginPercentage,
@@ -192,6 +219,111 @@ const GaugeController = Chart.controllers.doughnut.extend({
     // draw value text
     ctx.fillStyle = color || config.options.defaultFontColor;
     const magicNumber = 0.075; // manual testing
+    
+    if (strokeWidth && strokeColor) {
+      ctx.lineWidth = strokeWidth;
+      ctx.strokeStyle = strokeColor;
+      ctx.strokeText(valueText, 0, textHeight * magicNumber);
+    }
+
+    ctx.fillText(valueText, 0, textHeight * magicNumber);
+
+    ctx.restore();
+  },
+  drawValueDescriptionLabel(ease) { // eslint-disable-line no-unused-vars
+    if (!this.chart.config.options.valueDescriptionLabel.display) {
+      return;
+    }
+    const { ctx, config } = this.chart;
+    const {
+      defaultFontFamily,
+    } = config.options;
+    const dataset = config.data.datasets[this.index];
+    const {
+      formatter,
+      fontSize,
+      useDatasetColor,
+      color,
+      backgroundColor,
+      strokeWidth,
+      strokeColor,
+      borderRadius,
+      padding,
+      bottomMarginPercentage
+    } = config.options.valueDescriptionLabel;
+
+    let valueDescriptionIndex = 0;
+
+    const dataPoints = dataset.data.sort((a, b) => a - b);
+    if (!dataPoints.length) {
+      return;
+    }
+
+    if (dataset.value >= dataPoints[dataPoints.length - 1]) {
+      valueDescriptionIndex = dataPoints.length - 1;
+    } else {
+      for (let i = 0; i < dataPoints.length; i++) {
+        if (dataset.value < dataPoints[i]) {
+          valueDescriptionIndex = i;
+          break;
+        }
+      }
+    }
+
+    const width = this.getWidth(this.chart);
+    const bottomMargin = (bottomMarginPercentage / 100) * width;
+
+    const fmt = formatter || (value => value);
+    const valueText = fmt(config.data.labels[valueDescriptionIndex]).toString();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    if (fontSize) {
+      ctx.font = `${fontSize}px ${defaultFontFamily}`;
+    }
+
+    // const { width: textWidth, actualBoundingBoxAscent, actualBoundingBoxDescent } = ctx.measureText(valueText);
+    // const textHeight = actualBoundingBoxAscent + actualBoundingBoxDescent;
+
+    const { width: textWidth } = ctx.measureText(valueText);
+    // approximate height until browsers support advanced TextMetrics
+    const textHeight = Math.max(ctx.measureText('m').width, ctx.measureText('\uFF37').width);
+
+    const x = -(padding.left + textWidth / 2);
+    const y = -(padding.top + textHeight / 2);
+    const w = (padding.left + textWidth + padding.right);
+    const h = (padding.top + textHeight + padding.bottom);
+
+    // center
+    let { dx, dy } = this.getTranslation(this.chart);
+    // add rotation
+    const rotation = this.chart.options.rotation % (Math.PI * 2.0);
+    dx += bottomMargin * Math.cos(rotation + Math.PI / 2);
+    dy += bottomMargin * Math.sin(rotation + Math.PI / 2);
+
+    // draw
+    ctx.save();
+    ctx.translate(dx, dy);
+
+    // draw background
+    ctx.beginPath();
+    Chart.helpers.canvas.roundedRect(ctx, x, y, w, h, borderRadius);
+    ctx.fillStyle = backgroundColor;
+    ctx.fill();
+
+    // draw value text
+    if (useDatasetColor) {
+      ctx.fillStyle = dataset.backgroundColor[valueDescriptionIndex];
+    } else {
+      ctx.fillStyle = color || config.options.defaultFontColor;
+    }
+    const magicNumber = 0.075; // manual testing
+    
+    if (strokeWidth && strokeColor) {
+      ctx.lineWidth = strokeWidth;
+      ctx.strokeStyle = strokeColor;
+      ctx.strokeText(valueText, 0, textHeight * magicNumber);
+    }
+
     ctx.fillText(valueText, 0, textHeight * magicNumber);
 
     ctx.restore();
@@ -244,6 +376,7 @@ const GaugeController = Chart.controllers.doughnut.extend({
 
     this.drawNeedle(ease);
     this.drawValueLabel(ease);
+    this.drawValueDescriptionLabel(ease);
   },
 });
 
